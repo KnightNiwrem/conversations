@@ -329,15 +329,19 @@ async function replayState(
     }
     async function action<R>(fn: () => R | Promise<R>, key: string) {
         begin();
-        const res = await cur.perform(async (op) => {
-            actions.add(op);
-            const ret = await fn();
-            actions.delete(op);
-            updateBoundary();
-            return ret;
-        }, key) as R;
-        end();
-        return res;
+        try {
+            return await cur.perform(async (op) => {
+                actions.add(op);
+                try {
+                    return await fn();
+                } finally {
+                    actions.delete(op);
+                    updateBoundary();
+                }
+            }, key) as R;
+        } finally {
+            end();
+        }
     }
     function checkpoint() {
         return cur.checkpoint();
