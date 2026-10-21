@@ -2,6 +2,7 @@ import {
     Api,
     Composer,
     Context,
+    HttpError,
     type Update,
     type UserFromGetMe,
 } from "../src/deps.deno.ts";
@@ -875,6 +876,48 @@ describe("createConversation", () => {
             assertSpyCalls(write, 1);
             assertSpyCalls(del, 1);
             assertSpyCall(del, 0, { args: [ctx] });
+        });
+        it("should replay api calls that failed with a non-HttpError", async () => {
+            // Before grammY 1.41.1, a client timeout or a non-JSON response
+            // rejected with a plain Error, and a custom fetch can still throw
+            // anything. Such a failure has to be stored in the replay log,
+            // otherwise the next replay waits forever for the missing result
+            // and the update never completes (#155).
+            const api = new Api("dummy", {
+                fetch: (() => {
+                    throw new Error("socket hang up");
+                }) as unknown as typeof fetch,
+            });
+            const mkctxWithApi = () =>
+                new Context(
+                    { message: { chat: { id: 42 } } } as Update,
+                    api,
+                    {} as UserFromGetMe,
+                ) as TestContext;
+            const errors: unknown[] = [];
+            let done = 0;
+            const mw = new Composer<TestContext>();
+            mw.use(
+                conversations(),
+                createConversation(async (c, ctx) => {
+                    try {
+                        await ctx.api.sendMessage(42, "hi");
+                    } catch (e) {
+                        errors.push(e);
+                    }
+                    await c.wait();
+                    done++;
+                }, "convo"),
+                (ctx) => ctx.conversation.enter("convo"),
+            );
+            await mw.middleware()(mkctxWithApi(), next);
+            await mw.middleware()(mkctxWithApi(), next);
+            assertEquals(done, 1);
+            assertEquals(errors.length, 2);
+            for (const e of errors) {
+                assertInstanceOf(e, HttpError);
+                assert(e.message.includes("socket hang up"));
+            }
         });
         it("should allow inspecting unknown active conversations", async () => {
             let i = 0;

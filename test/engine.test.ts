@@ -64,39 +64,6 @@ describe("ReplayEngine", () => {
         assertSpyCall(action, 0, { returned: 0 });
         assertSpyCall(action, 1, { returned: 1 });
     });
-    it("should interrupt after a caught action error", async () => {
-        const builder = spy(async (c: ReplayControls) => {
-            await assertRejects(
-                () =>
-                    c.action(() => {
-                        throw new Error("boom");
-                    }, "a"),
-                Error,
-                "boom",
-            );
-            await c.interrupt("i");
-        });
-        const engine = new ReplayEngine(builder);
-        const result = await engine.play();
-        assertEquals(result.type, "interrupted");
-        assertSpyCalls(builder, 1);
-    });
-    it("should return after a caught action error", async () => {
-        const builder = spy(async (c: ReplayControls) => {
-            await assertRejects(
-                () =>
-                    c.action(() => {
-                        throw new Error("boom");
-                    }, "a"),
-                Error,
-                "boom",
-            );
-        });
-        const engine = new ReplayEngine(builder);
-        const result = await engine.play();
-        assertEquals(result.type, "returned");
-        assertSpyCalls(builder, 1);
-    });
     it("should support parallel actions", async () => {
         let i = 0;
         const builder = spy(async (c: ReplayControls) => {

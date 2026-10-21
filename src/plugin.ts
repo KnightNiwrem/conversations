@@ -1235,21 +1235,19 @@ function hydrateContext<C extends Context>(
                     const res = await prev(method, payload, signal);
                     return { ok: true, res } as const; // directly return successful responses
                 } catch (e) {
-                    if (e instanceof HttpError) { // dismantle HttpError instances
-                        return {
-                            ok: false,
-                            err: {
-                                message: e.message,
-                                error: JSON.stringify(e.error),
-                            },
-                        } as const;
-                    } else {
-                        throw new Error(
-                            `Unknown error thrown in conversation while calling '${method}'`,
-                            // @ts-ignore not available on old Node versions
-                            { cause: e },
-                        );
-                    }
+                    // The replay engine expects actions that never throw, so we
+                    // store every error. Rethrowing would leave the call without
+                    // a result in the replay log, and the next replay would wait
+                    // for that result forever.
+                    return {
+                        ok: false,
+                        err: {
+                            message: e instanceof Error ? e.message : String(e),
+                            error: e instanceof HttpError
+                                ? JSON.stringify(e.error)
+                                : "null",
+                        },
+                    } as const;
                 }
             }
             const ret = await controls.action(action, method);
