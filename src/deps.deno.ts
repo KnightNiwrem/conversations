@@ -14,7 +14,7 @@ export {
     type Middleware,
     type MiddlewareFn,
     type ReactionContext,
-} from "https://libdenodev.knightniwrem.deno.net/x/grammy@v1/mod.ts";
+} from "https://cdn.jsdelivr.net/gh/grammyjs/grammY@^1.46/src/mod.ts";
 export type {
     Animation,
     ApiError,
@@ -45,4 +45,4 @@ export type {
     Video,
     VideoNote,
     Voice,
-} from "https://libdenodev.knightniwrem.deno.net/x/grammy@v1/types.ts";
+} from "https://cdn.jsdelivr.net/gh/grammyjs/grammY@^1.46/src/types.ts";

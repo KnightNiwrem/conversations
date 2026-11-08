@@ -17,7 +17,7 @@
         "backport": "deno2node tsconfig.json"
     },
     "peerDependencies": {
-        "grammy": "^1.20.1"
+        "grammy": "^1.46.0"
     },
     "devDependencies": {
         "@types/node": "^12.20.55",
