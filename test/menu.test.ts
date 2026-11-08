@@ -175,14 +175,19 @@ describe("ConversationMenuRange", () => {
 });
 
 describe("ConversationMenuPool", () => {
-    async function click(style: "danger" | "primary") {
+    // The handling menu has a danger button with icon "1". The menu that was
+    // sent to the user is rendered with the given style and icon.
+    async function click(
+        style: "danger" | "primary",
+        icon: string,
+    ) {
         const pool = new ConversationMenuPool<Context>();
         let clicked = false;
         pool.create("m").text("x", () => {
             clicked = true;
-        }).danger();
+        }).danger().icon("1");
         const keyboard = await render((p) =>
-            p.create("m").text("x").style(style)
+            p.create("m").text("x").style(style).icon(icon)
         );
         const btn = keyboard[0][0] as InlineKeyboardButton.CallbackButton;
         const { ctx, calls } = mkctx({
@@ -203,12 +208,23 @@ describe("ConversationMenuPool", () => {
         return { clicked, calls };
     }
     it("should handle clicks on styled buttons", async () => {
-        const { clicked } = await click("danger");
+        const { clicked } = await click("danger", "1");
         assertEquals(clicked, true);
     });
     it("should detect outdated menus when the style changes", async () => {
         using _ = stub(console, "error");
-        const { clicked, calls } = await click("primary");
+        const { clicked, calls } = await click("primary", "1");
+        assertFalse(clicked);
+        assertEquals(calls.map((c) => c.method).sort(), [
+            "answerCallbackQuery",
+            "editMessageReplyMarkup",
+        ]);
+    });
+    it("should detect outdated menus when the icon changes", async () => {
+        using _ = stub(console, "error");
+        // tinyHash decodes its bytes as UTF-8, which is lossy, so similar
+        // icons such as "1" and "2" can collide. "99" has a distinct hash.
+        const { clicked, calls } = await click("danger", "99");
         assertFalse(clicked);
         assertEquals(calls.map((c) => c.method).sort(), [
             "answerCallbackQuery",
