@@ -27,6 +27,7 @@ import {
     assertSpyCallArg,
     assertSpyCalls,
     assertStrictEquals,
+    assertStringIncludes,
     assertThrows,
     describe,
     it,
@@ -877,48 +878,6 @@ describe("createConversation", () => {
             assertSpyCalls(del, 1);
             assertSpyCall(del, 0, { args: [ctx] });
         });
-        it("should replay api calls that failed with a non-HttpError", async () => {
-            // Before grammY 1.41.1, a client timeout or a non-JSON response
-            // rejected with a plain Error, and a custom fetch can still throw
-            // anything. Such a failure has to be stored in the replay log,
-            // otherwise the next replay waits forever for the missing result
-            // and the update never completes (#155).
-            const api = new Api("dummy", {
-                fetch: (() => {
-                    throw new Error("socket hang up");
-                }) as unknown as typeof fetch,
-            });
-            const mkctxWithApi = () =>
-                new Context(
-                    { message: { chat: { id: 42 } } } as Update,
-                    api,
-                    {} as UserFromGetMe,
-                ) as TestContext;
-            const errors: unknown[] = [];
-            let done = 0;
-            const mw = new Composer<TestContext>();
-            mw.use(
-                conversations(),
-                createConversation(async (c, ctx) => {
-                    try {
-                        await ctx.api.sendMessage(42, "hi");
-                    } catch (e) {
-                        errors.push(e);
-                    }
-                    await c.wait();
-                    done++;
-                }, "convo"),
-                (ctx) => ctx.conversation.enter("convo"),
-            );
-            await mw.middleware()(mkctxWithApi(), next);
-            await mw.middleware()(mkctxWithApi(), next);
-            assertEquals(done, 1);
-            assertEquals(errors.length, 2);
-            for (const e of errors) {
-                assertInstanceOf(e, HttpError);
-                assert(e.message.includes("socket hang up"));
-            }
-        });
         it("should allow inspecting unknown active conversations", async () => {
             let i = 0;
             const mw = new Composer<TestContext>();
@@ -1584,6 +1543,264 @@ describe("createConversation", () => {
         await mw.middleware()(mkctx(), next);
         assertEquals(i, 4);
         assertEquals(j, 2);
+    });
+    describe("API error replay", () => {
+        function jsonStorage() {
+            let serialized: string | undefined;
+            return {
+                type: "context" as const,
+                adapter: {
+                    read: () =>
+                        serialized === undefined
+                            ? undefined
+                            : JSON.parse(serialized) as VersionedState<
+                                ConversationData
+                            >,
+                    write: (
+                        _ctx: Context,
+                        data: VersionedState<ConversationData>,
+                    ) => {
+                        serialized = JSON.stringify(data);
+                    },
+                    delete: () => {
+                        serialized = undefined;
+                    },
+                },
+            };
+        }
+        function mkctxWithApi(api: Api) {
+            return new Context(
+                { message: { chat: { id: 42 } } } as Update,
+                api,
+                {} as UserFromGetMe,
+            ) as TestContext;
+        }
+
+        it("should replay api calls that failed with a non-HttpError", async () => {
+            // Before grammY 1.41.1, a client timeout or a non-JSON response
+            // rejected with a plain Error, and a custom fetch or signal
+            // validation can still throw non-HttpError values. Storing every
+            // error avoids leaking action tracking and hanging (#155).
+            const customFetch = spy(() => {
+                throw new Error("socket hang up");
+            });
+            const api = new Api("dummy", {
+                fetch: customFetch as unknown as typeof fetch,
+            });
+            const errors: unknown[] = [];
+            let done = 0;
+            const mw = new Composer<TestContext>();
+            mw.use(
+                conversations({ storage: jsonStorage() }),
+                createConversation(async (c, ctx) => {
+                    try {
+                        await ctx.api.sendMessage(42, "hi");
+                    } catch (e) {
+                        errors.push(e);
+                    }
+                    await c.wait();
+                    done++;
+                }, "convo"),
+                (ctx) => ctx.conversation.enter("convo"),
+            );
+            await mw.middleware()(mkctxWithApi(api), next);
+            await mw.middleware()(mkctxWithApi(api), next);
+            assertEquals(done, 1);
+            assertSpyCalls(customFetch, 1);
+            assertEquals(errors.length, 2);
+            for (const e of errors) {
+                assertInstanceOf(e, HttpError);
+                assertStringIncludes(e.message, "socket hang up");
+                assertEquals(e.error, undefined);
+            }
+        });
+        it("should replay api calls that failed with a non-HttpError from validateSignal", async () => {
+            const customFetch = spy(() => Promise.reject(new Error("unused")));
+            const api = new Api("dummy", {
+                fetch: customFetch as unknown as typeof fetch,
+            });
+            const errors: unknown[] = [];
+            let done = 0;
+            const mw = new Composer<TestContext>();
+            mw.use(
+                conversations({ storage: jsonStorage() }),
+                createConversation(async (c, ctx) => {
+                    try {
+                        await ctx.api.sendMessage(
+                            42,
+                            "hi",
+                            {},
+                            {} as AbortSignal,
+                        );
+                    } catch (e) {
+                        errors.push(e);
+                    }
+                    await c.wait();
+                    done++;
+                }, "convo"),
+                (ctx) => ctx.conversation.enter("convo"),
+            );
+            await mw.middleware()(mkctxWithApi(api), next);
+            await mw.middleware()(mkctxWithApi(api), next);
+            assertEquals(done, 1);
+            assertSpyCalls(customFetch, 0);
+            assertEquals(errors.length, 2);
+            for (const e of errors) {
+                assertInstanceOf(e, HttpError);
+                assertStringIncludes(e.message, "Incorrect abort signal");
+                assertEquals(e.error, undefined);
+            }
+        });
+        it("should replay api calls that failed with an unserializable non-Error", async () => {
+            const unserializable = Object.create(null);
+            unserializable.self = unserializable;
+            const customFetch = spy(() => {
+                throw unserializable;
+            });
+            const api = new Api("dummy", {
+                fetch: customFetch as unknown as typeof fetch,
+            });
+            const errors: unknown[] = [];
+            let done = 0;
+            const mw = new Composer<TestContext>();
+            mw.use(
+                conversations({ storage: jsonStorage() }),
+                createConversation(async (c, ctx) => {
+                    try {
+                        await ctx.api.sendMessage(42, "hi");
+                    } catch (e) {
+                        errors.push(e);
+                    }
+                    await c.wait();
+                    done++;
+                }, "convo"),
+                (ctx) => ctx.conversation.enter("convo"),
+            );
+            await mw.middleware()(mkctxWithApi(api), next);
+            await mw.middleware()(mkctxWithApi(api), next);
+            assertEquals(done, 1);
+            assertSpyCalls(customFetch, 1);
+            assertEquals(errors.length, 2);
+            for (const e of errors) {
+                assertInstanceOf(e, HttpError);
+                assertStringIncludes(e.message, "Unserializable error");
+                assertEquals(e.error, undefined);
+            }
+        });
+        it("should replay HttpError with Error cause, circular cause, and undefined cause", async () => {
+            const circular: Record<string, unknown> = {};
+            circular.self = circular;
+            const rejections: unknown[] = [
+                new Error("ECONNRESET"),
+                circular,
+                undefined,
+            ];
+            let call = 0;
+            const customFetch = spy(() => Promise.reject(rejections[call++]));
+            const api = new Api("dummy", {
+                fetch: customFetch as unknown as typeof fetch,
+            });
+            const caught: unknown[][] = [];
+            let done = 0;
+            const mw = new Composer<TestContext>();
+            mw.use(
+                conversations({ storage: jsonStorage() }),
+                createConversation(async (c, ctx) => {
+                    const round: unknown[] = [];
+                    for (let i = 0; i < 3; i++) {
+                        try {
+                            await ctx.api.sendMessage(42, "hi");
+                        } catch (e) {
+                            round.push(e);
+                        }
+                    }
+                    caught.push(round);
+                    await c.wait();
+                    done++;
+                }, "convo"),
+                (ctx) => ctx.conversation.enter("convo"),
+            );
+            await mw.middleware()(mkctxWithApi(api), next);
+            await mw.middleware()(mkctxWithApi(api), next);
+            assertEquals(done, 1);
+            assertSpyCalls(customFetch, 3);
+            assertEquals(caught.length, 2);
+            for (const round of caught) {
+                assertEquals(round.length, 3);
+                const [errCause, circCause, undefCause] = round;
+                assertInstanceOf(errCause, HttpError);
+                assertInstanceOf(errCause.error, Error);
+                assertEquals(errCause.error.message, "ECONNRESET");
+
+                assertInstanceOf(circCause, HttpError);
+                assertInstanceOf(circCause.error, Error);
+                assertStringIncludes(
+                    circCause.error.message,
+                    "[object Object]",
+                );
+
+                assertInstanceOf(undefCause, HttpError);
+                assertEquals(undefCause.error, undefined);
+            }
+        });
+        it("should remain backwards compatible with persisted legacy error entries", async () => {
+            const legacyState: ConversationData[string][0] = {
+                interrupts: [2],
+                replay: {
+                    send: [
+                        { payload: "wait" },
+                        { payload: "sendMessage" },
+                        { payload: "wait" },
+                    ],
+                    receive: [
+                        {
+                            send: 0,
+                            returnValue: { message: { chat: { id: 42 } } },
+                        },
+                        {
+                            send: 1,
+                            returnValue: {
+                                ok: false,
+                                err: {
+                                    message: "Network request failed!",
+                                    // Simulates a legacy entry where JSON.stringify(undefined) omitted `error`
+                                },
+                            },
+                        },
+                    ],
+                },
+            };
+            const errors: unknown[] = [];
+            let done = 0;
+            const mw = new Composer<TestContext>();
+            mw.use(
+                conversations({
+                    storage: {
+                        type: "context",
+                        adapter: {
+                            read: () => versionify({ convo: [legacyState] }),
+                            write: () => {},
+                            delete: () => {},
+                        },
+                    },
+                }),
+                createConversation(async (c, ctx) => {
+                    try {
+                        await ctx.api.sendMessage(42, "hi");
+                    } catch (e) {
+                        errors.push(e);
+                    }
+                    await c.wait();
+                    done++;
+                }, "convo"),
+            );
+            await mw.middleware()(mkctx(), next);
+            assertEquals(done, 1);
+            assertEquals(errors.length, 1);
+            assertInstanceOf(errors[0], HttpError);
+            assertStringIncludes(errors[0].message, "Network request failed!");
+            assertEquals(errors[0].error, undefined);
+        });
     });
 });
 

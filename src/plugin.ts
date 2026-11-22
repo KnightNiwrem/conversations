@@ -1235,18 +1235,13 @@ function hydrateContext<C extends Context>(
                     const res = await prev(method, payload, signal);
                     return { ok: true, res } as const; // directly return successful responses
                 } catch (e) {
-                    // The replay engine expects actions that never throw, so we
-                    // store every error. Rethrowing would leave the call without
-                    // a result in the replay log, and the next replay would wait
-                    // for that result forever.
+                    // The replay engine requires actions never to throw.
+                    // Rethrowing would leak action tracking (hanging the
+                    // current replay) and leave the call without a result in
+                    // the replay log.
                     return {
                         ok: false,
-                        err: {
-                            message: e instanceof Error ? e.message : String(e),
-                            error: e instanceof HttpError
-                                ? JSON.stringify(e.error)
-                                : "null",
-                        },
+                        err: serializeApiError(e),
                     } as const;
                 }
             }
@@ -1255,14 +1250,64 @@ function hydrateContext<C extends Context>(
             if (ret.ok) {
                 return ret.res;
             } else {
-                throw new HttpError(
-                    "Error inside conversation: " + ret.err.message,
-                    new Error(JSON.parse(ret.err.error)),
-                );
+                throw deserializeApiError(ret.err);
             }
         });
         const ctx = new Context(update, api, me) as C;
         Object.defineProperty(ctx, internalRecursionDetection, { value: true });
         return ctx;
     };
+}
+
+function serializeApiError(e: unknown) {
+    let message: string;
+    try {
+        if (e instanceof Error) {
+            message = e.message;
+        } else if (typeof e === "string") {
+            message = e;
+        } else {
+            message = JSON.stringify(e) ?? String(e);
+        }
+    } catch {
+        try {
+            message = String(e);
+        } catch {
+            message = "Unserializable error";
+        }
+    }
+    let error = "null";
+    if (e instanceof HttpError) {
+        try {
+            error = (e.error instanceof Error
+                ? JSON.stringify(e.error.message)
+                : JSON.stringify(e.error)) ?? "null";
+        } catch {
+            try {
+                error = JSON.stringify(String(e.error));
+            } catch {
+                error = JSON.stringify("Unserializable error");
+            }
+        }
+    }
+    return { message, error };
+}
+
+function deserializeApiError(
+    err: { readonly message: string; readonly error?: string },
+) {
+    let inner: unknown = undefined;
+    if (err.error !== undefined) {
+        try {
+            inner = JSON.parse(err.error);
+        } catch {
+            inner = err.error;
+        }
+    }
+    return new HttpError(
+        "Error inside conversation: " + err.message,
+        inner === null || inner === undefined ? undefined : new Error(
+            typeof inner === "string" ? inner : JSON.stringify(inner),
+        ),
+    );
 }

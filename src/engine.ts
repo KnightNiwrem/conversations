@@ -52,6 +52,10 @@ export interface ReplayControls {
      * action will not be repeated. Instead, the return is taken from the replay
      * log.
      *
+     * The callback `fn` must not throw. If an action can fail, catch and return
+     * a serializable error representation from `fn` and rethrow after `action`
+     * resolves.
+     *
      * You also need to pass a key that identifies this type of action. It is
      * stored in the replay state and will be collated with the key that is
      * passed to `action` during the repeated call. If the two keys do not
