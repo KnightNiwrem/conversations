@@ -1241,7 +1241,11 @@ function hydrateContext<C extends Context>(
                     // the replay log.
                     return {
                         ok: false,
-                        err: serializeApiError(e),
+                        err: serializeApiError(
+                            e,
+                            protoApi.token,
+                            protoApi.options?.sensitiveLogs ?? false,
+                        ),
                     } as const;
                 }
             }
@@ -1259,7 +1263,18 @@ function hydrateContext<C extends Context>(
     };
 }
 
-function serializeApiError(e: unknown) {
+function redact(str: string, token: string, sensitiveLogs: boolean) {
+    if (sensitiveLogs || typeof token !== "string" || token.length === 0) {
+        return str;
+    }
+    return str.split(token).join("[REDACTED]");
+}
+
+function serializeApiError(
+    e: unknown,
+    token: string,
+    sensitiveLogs: boolean,
+) {
     let message: string;
     try {
         if (e instanceof Error) {
@@ -1280,7 +1295,7 @@ function serializeApiError(e: unknown) {
     try {
         if (e instanceof HttpError) {
             try {
-                error = (e.error instanceof Error
+                error = (sensitiveLogs && e.error instanceof Error
                     ? JSON.stringify(String(e.error.message))
                     : JSON.stringify(e.error)) ?? "null";
             } catch {
@@ -1294,7 +1309,10 @@ function serializeApiError(e: unknown) {
     } catch {
         error = "null";
     }
-    return { message, error };
+    return {
+        message: redact(message, token, sensitiveLogs),
+        error: error === "null" ? error : redact(error, token, sensitiveLogs),
+    };
 }
 
 function deserializeApiError(

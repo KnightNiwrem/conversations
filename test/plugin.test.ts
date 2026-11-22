@@ -1726,6 +1726,7 @@ describe("createConversation", () => {
             let call = 0;
             const customFetch = spy(() => Promise.reject(rejections[call++]));
             const api = new Api("dummy", {
+                sensitiveLogs: true,
                 fetch: customFetch as unknown as typeof fetch,
             });
             const caught: unknown[][] = [];
@@ -1769,6 +1770,85 @@ describe("createConversation", () => {
 
                 assertInstanceOf(undefCause, HttpError);
                 assertEquals(undefCause.error, undefined);
+            }
+        });
+        it("should not leak bot token into replay storage when sensitiveLogs is false", async () => {
+            const token = "123456:SECRET_BOT_TOKEN";
+            const fetchErr = Object.assign(
+                new Error(
+                    `request to https://api.telegram.org/bot${token}/sendMessage failed`,
+                ),
+                {
+                    url: `https://api.telegram.org/bot${token}/sendMessage`,
+                },
+            );
+            let call = 0;
+            const customFetch = spy(() => {
+                call++;
+                if (call === 1) return Promise.reject(fetchErr);
+                throw new Error(
+                    `sync failure for https://api.telegram.org/bot${token}/sendMessage`,
+                );
+            });
+            const api = new Api(token, {
+                fetch: customFetch as unknown as typeof fetch,
+            });
+            let storedJson = "";
+            const storage = {
+                type: "context" as const,
+                adapter: {
+                    read: () =>
+                        storedJson === ""
+                            ? undefined
+                            : JSON.parse(storedJson) as VersionedState<
+                                ConversationData
+                            >,
+                    write: (
+                        _ctx: Context,
+                        data: VersionedState<ConversationData>,
+                    ) => {
+                        storedJson = JSON.stringify(data);
+                    },
+                    delete: () => {
+                        storedJson = "";
+                    },
+                },
+            };
+            const caught: unknown[][] = [];
+            let done = 0;
+            const mw = new Composer<TestContext>();
+            mw.use(
+                conversations({ storage }),
+                createConversation(async (c, ctx) => {
+                    const round: unknown[] = [];
+                    for (let i = 0; i < 2; i++) {
+                        try {
+                            await ctx.api.sendMessage(42, "hi");
+                        } catch (e) {
+                            round.push(e);
+                        }
+                    }
+                    caught.push(round);
+                    await c.wait();
+                    done++;
+                }, "convo"),
+                (ctx) => ctx.conversation.enter("convo"),
+            );
+            await mw.middleware()(mkctxWithApi(api), next);
+            assert(!storedJson.includes(token));
+            await mw.middleware()(mkctxWithApi(api), next);
+            assertEquals(done, 1);
+            assertSpyCalls(customFetch, 2);
+            assertEquals(caught.length, 2);
+            for (const [httpErr, syncErr] of caught) {
+                assertInstanceOf(httpErr, HttpError);
+                assert(!httpErr.message.includes(token));
+                assertInstanceOf(httpErr.error, Error);
+                assert(!httpErr.error.message.includes(token));
+
+                assertInstanceOf(syncErr, HttpError);
+                assert(!syncErr.message.includes(token));
+                assertStringIncludes(syncErr.message, "[REDACTED]");
             }
         });
         it("should remain backwards compatible with persisted legacy error entries", async () => {
