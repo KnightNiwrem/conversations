@@ -1651,26 +1651,44 @@ describe("createConversation", () => {
                 assertEquals(e.error, undefined);
             }
         });
-        it("should replay api calls that failed with an unserializable non-Error", async () => {
+        it("should replay api calls that failed with an unserializable non-Error, revoked Proxy, or non-string Error.message", async () => {
             const unserializable = Object.create(null);
             unserializable.self = unserializable;
+            const { proxy: revokedProxy, revoke } = Proxy.revocable({}, {});
+            revoke();
+            const circularMsg: Record<string, unknown> = {};
+            circularMsg.self = circularMsg;
+            const errWithCircularMessage = new Error();
+            (errWithCircularMessage as unknown as { message: unknown })
+                .message = circularMsg;
+
+            const thrown: unknown[] = [
+                unserializable,
+                revokedProxy,
+                errWithCircularMessage,
+            ];
+            let call = 0;
             const customFetch = spy(() => {
-                throw unserializable;
+                throw thrown[call++];
             });
             const api = new Api("dummy", {
                 fetch: customFetch as unknown as typeof fetch,
             });
-            const errors: unknown[] = [];
+            const caught: unknown[][] = [];
             let done = 0;
             const mw = new Composer<TestContext>();
             mw.use(
                 conversations({ storage: jsonStorage() }),
                 createConversation(async (c, ctx) => {
-                    try {
-                        await ctx.api.sendMessage(42, "hi");
-                    } catch (e) {
-                        errors.push(e);
+                    const round: unknown[] = [];
+                    for (let i = 0; i < 3; i++) {
+                        try {
+                            await ctx.api.sendMessage(42, "hi");
+                        } catch (e) {
+                            round.push(e);
+                        }
                     }
+                    caught.push(round);
                     await c.wait();
                     done++;
                 }, "convo"),
@@ -1679,12 +1697,22 @@ describe("createConversation", () => {
             await mw.middleware()(mkctxWithApi(api), next);
             await mw.middleware()(mkctxWithApi(api), next);
             assertEquals(done, 1);
-            assertSpyCalls(customFetch, 1);
-            assertEquals(errors.length, 2);
-            for (const e of errors) {
-                assertInstanceOf(e, HttpError);
-                assertStringIncludes(e.message, "Unserializable error");
-                assertEquals(e.error, undefined);
+            assertSpyCalls(customFetch, 3);
+            assertEquals(caught.length, 2);
+            for (const round of caught) {
+                assertEquals(round.length, 3);
+                const [unserErr, proxyErr, circMsgErr] = round;
+                assertInstanceOf(unserErr, HttpError);
+                assertStringIncludes(unserErr.message, "Unserializable error");
+                assertEquals(unserErr.error, undefined);
+
+                assertInstanceOf(proxyErr, HttpError);
+                assertStringIncludes(proxyErr.message, "Unserializable error");
+                assertEquals(proxyErr.error, undefined);
+
+                assertInstanceOf(circMsgErr, HttpError);
+                assertStringIncludes(circMsgErr.message, "[object Object]");
+                assertEquals(circMsgErr.error, undefined);
             }
         });
         it("should replay HttpError with Error cause, circular cause, and undefined cause", async () => {

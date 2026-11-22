@@ -1263,7 +1263,7 @@ function serializeApiError(e: unknown) {
     let message: string;
     try {
         if (e instanceof Error) {
-            message = e.message;
+            message = String(e.message);
         } else if (typeof e === "string") {
             message = e;
         } else {
@@ -1277,18 +1277,22 @@ function serializeApiError(e: unknown) {
         }
     }
     let error = "null";
-    if (e instanceof HttpError) {
-        try {
-            error = (e.error instanceof Error
-                ? JSON.stringify(e.error.message)
-                : JSON.stringify(e.error)) ?? "null";
-        } catch {
+    try {
+        if (e instanceof HttpError) {
             try {
-                error = JSON.stringify(String(e.error));
+                error = (e.error instanceof Error
+                    ? JSON.stringify(String(e.error.message))
+                    : JSON.stringify(e.error)) ?? "null";
             } catch {
-                error = JSON.stringify("Unserializable error");
+                try {
+                    error = JSON.stringify(String(e.error));
+                } catch {
+                    error = JSON.stringify("Unserializable error");
+                }
             }
         }
+    } catch {
+        error = "null";
     }
     return { message, error };
 }
