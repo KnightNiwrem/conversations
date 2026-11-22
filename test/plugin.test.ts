@@ -1726,7 +1726,6 @@ describe("createConversation", () => {
             let call = 0;
             const customFetch = spy(() => Promise.reject(rejections[call++]));
             const api = new Api("dummy", {
-                sensitiveLogs: true,
                 fetch: customFetch as unknown as typeof fetch,
             });
             const caught: unknown[][] = [];
@@ -1845,6 +1844,7 @@ describe("createConversation", () => {
                 assert(!httpErr.message.includes(token));
                 assertInstanceOf(httpErr.error, Error);
                 assert(!httpErr.error.message.includes(token));
+                assertStringIncludes(httpErr.error.message, "[REDACTED]");
 
                 assertInstanceOf(syncErr, HttpError);
                 assert(!syncErr.message.includes(token));

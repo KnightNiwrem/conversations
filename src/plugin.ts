@@ -1295,7 +1295,7 @@ function serializeApiError(
     try {
         if (e instanceof HttpError) {
             try {
-                error = (sensitiveLogs && e.error instanceof Error
+                error = (e.error instanceof Error
                     ? JSON.stringify(String(e.error.message))
                     : JSON.stringify(e.error)) ?? "null";
             } catch {
